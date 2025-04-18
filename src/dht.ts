@@ -96,12 +96,14 @@ class DHT extends EventEmitter {
 
     const targetNodeInBuckets = this.findNodeInBuckets(recipient);
     if (targetNodeInBuckets) {
+      this.emit("nodeProcessesMessage");
       const alive = await this.rpc.ping(targetNodeInBuckets);
       if (alive) {
         const success = await this.rpc.sendMessage(targetNodeInBuckets, sender, recipient, message);
         this.emit("sent", { sender, recipient, content: message });
         this.emit("forward", { sender: this.nodeId, recipient });
         console.log("Im node " + this.nodeId + " forwarding the message to " + targetNodeInBuckets.id);
+        this.forwardedMessagesIds.add(message.id);
         // if (success) {
         //   this.emit("sent", { sender, recipient, content: message });
         // }
@@ -141,6 +143,7 @@ class DHT extends EventEmitter {
       console.log("Message already forwarded or no ID; skipping:", message.id);
       return;
     }
+    this.emit("nodeProcessesMessage");
     const closest = this.buckets.closest(recipient, this.k);
     console.log("Forwarding message to K closest peers:", closest.map(n => n.id));
     try {
@@ -162,6 +165,7 @@ class DHT extends EventEmitter {
   private handleMessage(rpcMessage: RPCMessage, from: Node): void {
     console.log("I'm node " + this.rpc.getId() + " Handling message: " + rpcMessage.type + ". From: " + from.id);
     if (rpcMessage.type === 'message') {
+      this.emit('messageReceived')
       const { sender, recipient, message } = rpcMessage;
       if (!sender || !recipient || !message || !message.id) {
         console.warn("Invalid message; dropping.");

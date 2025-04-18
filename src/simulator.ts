@@ -18,6 +18,7 @@ export class Simulator {
   private messagesDelivered: number;
   private nodesProcessingMessage: number;
   private messagePath: { from: string; to: string }[];
+  private messagesReceived: number;
 
   constructor(config: Partial<SimulatorConfig> = {}) {
     this.config = {
@@ -30,6 +31,7 @@ export class Simulator {
     this.messagesSent = 0;
     this.messagesDelivered = 0;
     this.nodesProcessingMessage = 0;
+    this.messagesReceived = 0;
     this.messagePath = [];
   }
 
@@ -62,10 +64,11 @@ export class Simulator {
       node.dht.on('chatMessage', () => {
         this.messagesDelivered++;
       });
-      node.dht.on('handlingMessage', () => this.nodesProcessingMessage++)
+      node.dht.on('nodeProcessesMessage', () => this.nodesProcessingMessage++)
       node.dht.on('forward', ({ sender, recipient }) => {
         this.messagePath.push({ from: sender, to: recipient });
       });
+      node.dht.on('messageReceived', () => this.messagesReceived++)
     }
   }
 
@@ -92,13 +95,16 @@ export class Simulator {
     await sourceNode.dht.sendMessage(toId, message);
   }
 
-  getStatistics(): { messagesSent: number; messagesDelivered: number; successRate: number, nodesProcessingMessage: number } {
+  getStatistics(): { messagesSent: number; messagesDelivered: number; successRate: number, nodesProcessingMessage: number,
+    messagesReceived: number
+   } {
     const successRate = this.messagesSent > 0 ? this.messagesDelivered / this.messagesSent : 0;
     return {
       messagesSent: this.messagesSent,
       messagesDelivered: this.messagesDelivered,
       successRate,
-      nodesProcessingMessage: this.nodesProcessingMessage
+      nodesProcessingMessage: this.nodesProcessingMessage,
+      messagesReceived: this.messagesReceived,
     };
   }
 
@@ -156,7 +162,9 @@ async function runSimulation() {
     const stats = simulator.getStatistics();
     console.log('Simulation Statistics:');
     console.log(`Messages Sent: ${stats.messagesSent}`);
+    console.log(`Messages received ${stats.messagesSent}`);
     console.log(`Nodes that saw the message ${stats.nodesProcessingMessage}`);
+    console.log(`Messages received ${stats.messagesSent}`);
     console.log(`Nodes that cached the message`);
     console.log(`Messages Delivered: ${stats.messagesDelivered}`);
     console.log(`Success Rate: ${(stats.successRate * 100).toFixed(2)}%`);
