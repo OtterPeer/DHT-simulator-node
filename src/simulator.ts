@@ -49,7 +49,7 @@ export class Simulator {
     for (let i = 0; i < this.nodes.length; i++) {
       if (this.nodes[i].online) {
         for (let j = 0; j < this.nodes.length; j++) {
-          if (Math.random() < 1 && this.nodes[i].id !== this.nodes[j].id) { // each nodes have seen about ~30% of a network
+          if (Math.random() < 0.3 && this.nodes[i].id !== this.nodes[j].id) { // each node has seen about ~30% of a network
             this.nodes[i].dht.addNode({id: this.nodes[j].id})
           }
         }
@@ -57,8 +57,7 @@ export class Simulator {
     }
 
     for (const node of this.nodes) {
-      // node.online = Math.random() < this.config.onlineProbability; //set some nodes to offline state
-      node.online = true;
+      node.online = Math.random() < this.config.onlineProbability;
       node.dht.on('sent', () => this.messagesSent++);
       node.dht.on('chatMessage', () => {
         this.messagesDelivered++;
@@ -103,12 +102,12 @@ export class Simulator {
     };
   }
 
-  generateVisualization(): void {
+  generateVisualization(senderId?: string, recipientId?: string): void {
     const nodes = this.nodes.map(node => ({
       id: node.id,
       label: node.online ? `${node.id.slice(0, 8)} (online)` : `${node.id.slice(0, 8)} (offline)`,
-      // todo: add new color for nodes that forwareded and cached the message
       color: node.online ? '#90EE90' : '#FF6347',
+      // color: node.dht.cachedMessages.size > 0 ? '#FFFF00' : (node.online ? '#90EE90' : '#FF6347'),
     }));
 
     const edges = this.messagePath.map(path => ({
@@ -117,8 +116,9 @@ export class Simulator {
       color: '#0000FF',
     }));
 
-    generateVisualizer(nodes, edges, './output/network.html');
+    generateVisualizer(nodes, edges, './output/network.html', senderId, recipientId);
   }
+
 
   isNodeOnline(nodeId: string): boolean {
     const node = this.nodes.find(n => n.id === nodeId);
@@ -134,7 +134,7 @@ export class Simulator {
 
 async function runSimulation() {
   const simulator = new Simulator({
-    numNodes: 3,
+    numNodes: 500,
     onlineProbability: 0.2,
     k: 20,
     forwardThreshold: 1 << 20,
@@ -148,20 +148,26 @@ async function runSimulation() {
     return;
   }
 
-  const fromId = onlineNodes[0].id;
-  const toId = onlineNodes[2].id;
+  const fromId = onlineNodes[14].id;
+  const toId = onlineNodes[70].id;
   await simulator.sendMessage(fromId, toId, 'Hello, Kademlia!');
 
-  const stats = simulator.getStatistics();
-  console.log('Simulation Statistics:');
-  console.log(`Messages Sent: ${stats.messagesSent}`);
-  console.log(`Nodes that saw the message ${stats.nodesProcessingMessage}`)
-  console.log(`Nodes that cached the message`)
-  console.log(`Messages Delivered: ${stats.messagesDelivered}`);
-  console.log(`Success Rate: ${(stats.successRate * 100).toFixed(2)}%`);
+  function summarize() {
+    const stats = simulator.getStatistics();
+    console.log('Simulation Statistics:');
+    console.log(`Messages Sent: ${stats.messagesSent}`);
+    console.log(`Nodes that saw the message ${stats.nodesProcessingMessage}`);
+    console.log(`Nodes that cached the message`);
+    console.log(`Messages Delivered: ${stats.messagesDelivered}`);
+    console.log(`Success Rate: ${(stats.successRate * 100).toFixed(2)}%`);
 
-  simulator.generateVisualization();
-  console.log('Visualization generated at ./output/network.html');
+
+    simulator.generateVisualization(fromId, toId);
+    console.log('Visualization generated at ./output/network.html');
+  }
+
+  setTimeout(summarize, 5000);
+  // summarize();
 }
 
 runSimulation().catch(console.error);

@@ -46,7 +46,7 @@ export class MockWebRTCRPC extends EventEmitter implements WebRTCRPC {
     }
 
     const rpcMessage = { type: 'message', sender, recipient, message };
-    this.simulator.getNodesDHT(recipient)!.rpc.emit('message', rpcMessage, {id: sender})
+    this.simulator.getNodesDHT(node.id)!.rpc.emit('message', rpcMessage, {id: sender})
 
     return true;
   }

@@ -42,6 +42,7 @@ class DHT extends EventEmitter {
   private forwardedMessagesIds: Set<string>;
   private ttlCleanupInterval: NodeJS.Timeout | null;
   private readonly MAX_TTL = 48 * 3600 * 1000;
+  private nodeId: string;
 
   constructor(opts: DHTOptions) {
     super();
@@ -51,6 +52,7 @@ class DHT extends EventEmitter {
     this.k = opts.k || 2;
     this.forwardedMessagesIds = new Set();
     this.ttlCleanupInterval = null;
+    this.nodeId = opts.nodeId;
 
     this.rpc.on("ping", (node: Node) => {
       console.log('recieved ping event from mock rpc, from node: ' + node.id);
@@ -74,7 +76,6 @@ class DHT extends EventEmitter {
     if (!exists) {
       console.log('Adding new node:', node.id);
       this.buckets.add(node);
-      console.log(this.buckets);
       console.log("Sending ping to node " + node.id)
       const alive = await this.rpc.ping(node);
       console.log('Received pong:', alive);
@@ -98,9 +99,12 @@ class DHT extends EventEmitter {
       const alive = await this.rpc.ping(targetNodeInBuckets);
       if (alive) {
         const success = await this.rpc.sendMessage(targetNodeInBuckets, sender, recipient, message);
-        if (success) {
-          this.emit("sent", { sender, recipient, content: message });
-        }
+        this.emit("sent", { sender, recipient, content: message });
+        this.emit("forward", { sender: this.nodeId, recipient });
+        console.log("Im node " + this.nodeId + " forwarding the message to " + targetNodeInBuckets.id);
+        // if (success) {
+        //   this.emit("sent", { sender, recipient, content: message });
+        // }
       }
       // this.forward(sender, recipient, message);
       // this.cacheMessage(sender, recipient, message);
@@ -137,20 +141,18 @@ class DHT extends EventEmitter {
       console.log("Message already forwarded or no ID; skipping:", message.id);
       return;
     }
-    console.log("Buckets:")
-    for (const bucket of this.buckets.buckets) {
-      console.log(bucket)
-    }
     const closest = this.buckets.closest(recipient, this.k);
     console.log("Forwarding message to K closest peers:", closest.map(n => n.id));
     try {
       for (const node of closest) {
         if (node.id !== sender && node.id !== this.rpc.getId()) {
+          this.emit("sent", { sender, recipient, content: message });
           await this.rpc.sendMessage(node, sender, recipient, message);
+          this.emit("forward", { sender: this.nodeId, recipient: node.id});
+          console.log("Im node " + this.nodeId + " forwarding the message to " + node.id);
         }
       }
       this.forwardedMessagesIds.add(message.id);
-      this.emit("forward", { sender, recipient, message });
       console.log("Message forwarded:", message.id);
     } catch (error) {
       console.error("Error forwarding message:", error);
