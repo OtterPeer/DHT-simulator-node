@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import * as fs from 'fs';
+import * as path from 'path';
 import { Buffer } from 'buffer';
 
 interface VisNode {
@@ -33,14 +33,12 @@ export function generateVisualizer(
   senderId?: string,
   recipientId?: string
 ) {
-  // Sort nodes by XOR distance from the first node
   const referenceId = nodes[0]?.id || '';
   const sortedNodes = nodes.map(node => ({
     ...node,
     distance: xorDistance(node.id, referenceId),
   })).sort((a, b) => a.distance.localeCompare(b.distance));
 
-  // Calculate positions with scaled gaps
   const positions: VisNode[] = [];
   let currentX = 0;
   const baseGap = 100;
@@ -64,21 +62,19 @@ export function generateVisualizer(
     }
   }
 
-  // Apply colors for sender and recipient
   const finalNodes = positions.map(node => ({
     ...node,
-    color: node.id === senderId ? '#0000FF' : // Blue for sender
-           node.id === recipientId ? '#800080' : // Purple for recipient
+    color: node.id === senderId ? '#0000FF' :
+           node.id === recipientId ? '#800080' :
            node.color,
   }));
 
-  // Add unique IDs and curved edges with randomized radius
   const finalEdges = edges.map((edge, index) => ({
     ...edge,
     smooth: {
       enabled: true,
-      type: index % 2 === 0 ? 'curvedCW' : 'curvedCCW', // Alternate clockwise/counterclockwise
-      roundness: 0.2 + Math.random() * 0.3, // Random radius between 0.2 and 0.5
+      type: index % 2 === 0 ? 'curvedCW' : 'curvedCCW',
+      roundness: 0.05 + Math.random() * 0.1,
     },
   }));
 
@@ -104,7 +100,7 @@ export function generateVisualizer(
     const container = document.getElementById('network');
     const data = { nodes, edges };
     const options = {
-      nodes: { shape: 'dot', size: 10 },
+      nodes: { shape: 'dot', size: 100 },
       edges: { arrows: 'to' },
       layout: { hierarchical: false },
       physics: { enabled: false },
