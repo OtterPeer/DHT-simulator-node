@@ -15,6 +15,7 @@ interface SimulatorConfig {
   referenceDistance: number;
   cacheStrategy: CacheStrategy;
   forwardStrategy: ForwardStrategy;
+  networkAwareness: number;
   outputFile?: string;
 }
 
@@ -39,7 +40,8 @@ export class Simulator {
       k: config.k || 20,
       referenceDistance: config.referenceDistance || 2 ** 42,
       forwardStrategy: config.forwardStrategy || new DefaultForwardStrategy(),
-      cacheStrategy: config.cacheStrategy || new DefaultCacheStrategy()
+      cacheStrategy: config.cacheStrategy || new DefaultCacheStrategy(),
+      networkAwareness: config.networkAwareness || 0.1,
     };
     this.nodes = [];
     this.messagesSent = 0;
@@ -73,7 +75,7 @@ export class Simulator {
     for (let i = 0; i < this.nodes.length; i++) {
       if (this.nodes[i].online) {
         for (let j = 0; j < this.nodes.length; j++) {
-          if (Math.random() < 0.1 && this.nodes[i].id !== this.nodes[j].id) { // each node has seen about ~30% of a network
+          if (i !== j && Math.random() < this.config.networkAwareness) { // each node has seen about ~10% of a network
             this.nodes[i].dht.addNode({id: this.nodes[j].id})
           }
         }
@@ -230,6 +232,7 @@ async function runSimulation(params: {
   numNodes: number,
   onlineProbability: number,
   k: number,
+  networkAwareness: number;
   referenceDistance: number,
   forwardStrategy: string,
   cacheStrategy: string,
@@ -239,6 +242,7 @@ async function runSimulation(params: {
     numNodes: params.numNodes,
     onlineProbability: params.onlineProbability,
     k: params.k,
+    networkAwareness: params.networkAwareness,
     referenceDistance: params.referenceDistance,
     cacheStrategy: createCacheStrategy(params.cacheStrategy),
     forwardStrategy: createForwardStrategy(params.forwardStrategy, params.referenceDistance),
@@ -312,6 +316,11 @@ const argv = yargs
     description: 'Kademlia k parameter (bucket size)',
     default: 20,
   })
+  .option('networkAwareness', {
+    type: 'number',
+    description: 'Average fraction of network each node is aware of',
+    default: 0.3,
+  })
   .option('referenceDistance', {
     type: 'number',
     description: 'Reference distance for ProbabilisticForwardStrategy',
@@ -340,6 +349,7 @@ async function main() {
     numNodes: argv.numNodes,
     onlineProbability: argv.onlineProbability,
     k: argv.k,
+    networkAwareness: argv.networkAwareness,
     referenceDistance: argv.referenceDistance,
     forwardStrategy: argv.forwardStrategy,
     cacheStrategy: argv.cacheStrategy,
