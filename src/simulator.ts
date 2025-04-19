@@ -355,6 +355,8 @@ async function main() {
     cacheStrategy: argv.cacheStrategy,
     outputFile: argv.outputFile,
   });
+
+  process.exit(0);
 }
 
 main().catch(console.error);
