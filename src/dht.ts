@@ -101,18 +101,20 @@ class DHT extends EventEmitter {
           this.emit("forward", { sender: this.nodeId, recipient: targetNodeInBuckets.id, message });
           console.log(`I'm node ${this.nodeId} forwarding the message to ${targetNodeInBuckets.id}`);
           this.forwardedMessagesIds.add(message.id);
+          //remove message from cache
         } else {
-          this.cacheMessage(sender, recipient, message);
+          this.cacheMessage(sender, recipient, message, true);
           this.forward(sender, recipient, message, originNode, true);
           this.forwardedMessagesIds.add(message.id);
         }
       } else {
-        this.cacheMessage(sender, recipient, message);
+        this.cacheMessage(sender, recipient, message, true);
         this.forward(sender, recipient, message, originNode, true);
         this.forwardedMessagesIds.add(message.id);
       }
     } else {
       console.log("Routing message through other peers");
+      this.cacheMessage(sender, recipient, message, false);
       await this.forward(sender, recipient, message, originNode);
     }
   }
@@ -155,7 +157,7 @@ class DHT extends EventEmitter {
         this.emit.bind(this)
       );
     } catch (error) {
-      this.cacheMessage(sender, recipient, message);
+      this.cacheMessage(sender, recipient, message, false);
     }
   }
 
@@ -208,7 +210,7 @@ class DHT extends EventEmitter {
     }
   }
 
-  private cacheMessage(sender: string, recipient: string, message: MessageDTO, recipienFoundInBuckets: boolean = true): void {
+  private cacheMessage(sender: string, recipient: string, message: MessageDTO, recipienFoundInBuckets: boolean): void {
     this.cacheStrategy.cacheMessage(sender, recipient, message, this.nodeId, recipienFoundInBuckets);
     this.emit("cache", { sender, recipient, message });
   }

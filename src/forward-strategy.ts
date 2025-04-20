@@ -84,6 +84,7 @@ export class DistanceBasedForwardStrategy implements ForwardStrategy {
     const selfDistanceToTarget = KBucket.xorDistance(nodeId, recipient);
     const closest = buckets.closest(recipient, k);
 
+    forceForwardingToKPeers = false;
     let peersToForward: Node[];
     if (forceForwardingToKPeers) {
       peersToForward = closest.filter(node => node.id !== sender && node.id !== nodeId);

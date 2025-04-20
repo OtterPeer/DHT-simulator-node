@@ -5,7 +5,7 @@ import { MessageDTO } from './dht';
 import { generateVisualizer } from './visualizer';
 import { DefaultForwardStrategy, DistanceBasedForwardStrategy, ForwardStrategy, ProbabilisticForwardStrategy } from './forward-strategy';
 import * as yargs from 'yargs';
-import { CacheStrategy, DefaultCacheStrategy, LRUCacheStrategy } from './cache-strategy';
+import { CacheStrategy, DefaultCacheStrategy, DistanceBasedCacheStrategy, DistanceBasedProbabilisticCacheStrategy, LRUCacheStrategy } from './cache-strategy';
 import * as fs from 'fs/promises';
 
 interface SimulatorConfig {
@@ -13,7 +13,8 @@ interface SimulatorConfig {
   onlineProbability: number;
   k: number;
   referenceDistance: number;
-  cacheStrategy: CacheStrategy;
+  cacheStrategyType: string;
+  cacheProbability: number;
   forwardStrategy: ForwardStrategy;
   networkAwareness: number;
   outputFile?: string;
@@ -40,7 +41,8 @@ export class Simulator {
       k: config.k || 20,
       referenceDistance: config.referenceDistance || 2 ** 42,
       forwardStrategy: config.forwardStrategy || new DefaultForwardStrategy(),
-      cacheStrategy: config.cacheStrategy || new DefaultCacheStrategy(),
+      cacheStrategyType: config.cacheStrategyType || 'default',
+      cacheProbability: config.cacheProbability || 0.5,
       networkAwareness: config.networkAwareness || 0.1,
     };
     this.nodes = [];
@@ -63,11 +65,13 @@ export class Simulator {
       const id = uuid().replace(/-/g, '');
       const online = true;
       const mockRpc = new MockWebRTCRPC(this.nodes, this, id);
+      const cacheStrategy = createCacheStrategy(this.config.cacheStrategyType, this.config.cacheProbability);
       const dht = new DHT({
         nodeId: id,
         k: this.config.k,
         rpc: mockRpc,
         forwardStrategy: this.config.forwardStrategy,
+        cacheStrategy: cacheStrategy
       });
       this.nodes.push({ id, dht, online });
     }
@@ -210,21 +214,25 @@ function createForwardStrategy(name: string, referenceDistance: number): Forward
       return new DefaultForwardStrategy();
     case 'probabilistic':
       return new ProbabilisticForwardStrategy(referenceDistance);
-    case 'deterministic':
+    case 'distance':
       return new DistanceBasedForwardStrategy();
     default:
       throw new Error(`Unknown forward strategy: ${name}. Valid options: default, distance, random, probabilistic`);
   }
 }
 
-function createCacheStrategy(name: string): CacheStrategy {
+function createCacheStrategy(name: string, cacheProbability: number = 0.5): CacheStrategy {
   switch (name.toLowerCase()) {
     case 'default':
       return new DefaultCacheStrategy();
     case 'lru':
       return new LRUCacheStrategy(100);
+    case 'distance':
+      return new DistanceBasedCacheStrategy(100, 2 ** 44);
+    case 'distance_probabilistic':
+      return new DistanceBasedProbabilisticCacheStrategy(100, 2 ** 42, cacheProbability);
     default:
-      throw new Error(`Unknown cache strategy: ${name}. Valid options: default, lru`);
+      throw new Error(`Unknown cache strategy: ${name}. Valid options: default, lru, distance, distance_probabilistic`);
   }
 }
 
@@ -235,7 +243,8 @@ async function runSimulation(params: {
   networkAwareness: number;
   referenceDistance: number,
   forwardStrategy: string,
-  cacheStrategy: string,
+  cacheStrategyType: string,
+  cacheProbability: number,
   outputFile?: string
 }) {
   const config: SimulatorConfig = {
@@ -244,12 +253,13 @@ async function runSimulation(params: {
     k: params.k,
     networkAwareness: params.networkAwareness,
     referenceDistance: params.referenceDistance,
-    cacheStrategy: createCacheStrategy(params.cacheStrategy),
+    cacheStrategyType: params.cacheStrategyType,
+    cacheProbability: params.cacheProbability,
     forwardStrategy: createForwardStrategy(params.forwardStrategy, params.referenceDistance),
     outputFile: params.outputFile,
   };
 
-  console.log(`Running simulation with: numNodes=${config.numNodes}, onlineProbability=${config.onlineProbability}, k=${config.k}, referenceDistance=${config.referenceDistance}, forwardStrategy=${params.forwardStrategy}, cacheStrategy=${params.cacheStrategy}`);
+  console.log(`Running simulation with: numNodes=${config.numNodes}, onlineProbability=${config.onlineProbability}, k=${config.k}, referenceDistance=${config.referenceDistance}, forwardStrategy=${params.forwardStrategy}, cacheStrategy=${params.cacheStrategyType}`);
 
   const simulator = new Simulator(config);
   await simulator.initialize();
@@ -260,8 +270,7 @@ async function runSimulation(params: {
 
   const fromId = onlineNodes[Math.floor(Math.random() * (onlineNodes.length - 1))].id;
   const toId = offlineNodes[Math.floor(Math.random() * (offlineNodes.length - 1))].id;
-  await simulator.sendMessage(fromId, toId, 'Hello, Kademlia!');
-  await simulator.sendMessage(fromId, toId, 'Second message!');
+  await simulator.sendMessage(fromId, toId, 'First Message!');
 
   await simulator.waitForScenarioComplete();
 
@@ -275,7 +284,7 @@ async function runSimulation(params: {
   console.log(`Success Rate: ${(stats.successRate * 100).toFixed(2)}%`);
 
   simulator.generateVisualization(fromId, toId);
-  console.log(`Visualization generated at ./output/network_${params.forwardStrategy}_${params.cacheStrategy}.html`);
+  console.log(`Visualization generated at ./output/network_${params.forwardStrategy}_${params.cacheStrategyType}.html`);
 
   // Prepare result object
   const result = {
@@ -285,7 +294,7 @@ async function runSimulation(params: {
       k: config.k,
       referenceDistance: config.referenceDistance,
       forwardStrategy: params.forwardStrategy,
-      cacheStrategy: params.cacheStrategy,
+      cacheStrategy: params.cacheStrategyType,
     },
     stats,
     timestamp: new Date().toISOString(),
@@ -333,8 +342,13 @@ const argv = yargs
   })
   .option('cacheStrategy', {
     type: 'string',
-    description: 'Caching strategy (default, lru)',
+    description: 'Caching strategy (default, lru, distance, distance-probabilistic)',
     default: 'default',
+  })
+  .option('cacheProbability', {
+    type: 'number',
+    description: 'Caching probability',
+    default: 0.5,
   })
   .option('outputFile', {
     type: 'string',
@@ -352,7 +366,8 @@ async function main() {
     networkAwareness: argv.networkAwareness,
     referenceDistance: argv.referenceDistance,
     forwardStrategy: argv.forwardStrategy,
-    cacheStrategy: argv.cacheStrategy,
+    cacheStrategyType: argv.cacheStrategy,
+    cacheProbability: argv.cacheProbability,
     outputFile: argv.outputFile,
   });
 
