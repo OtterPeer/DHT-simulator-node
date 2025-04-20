@@ -11,17 +11,18 @@ from typing import Dict, List, Tuple
 
 PARAMS = {
     'numNodes': [1000],  # Fixed
-    'onlineProbability': [0.2],
+    'onlineProbability': [0.1, 0.2, 0.5, 0.8],
     'k': [20],
     # 'referenceDistance': [1e10, 1e12],  # Only for probabilistic
-    'referenceDistance': [5e13],  # Only for probabilistic forwardStrategy
-    'networkAwareness': [0.1],
-    'forwardStrategy': ['default', 'probabilistic'],
-    # 'forwardStrategy': ['default', 'probabilistic', 'distance'],
+    'referenceDistance': [137438953472.0, 1099511627776.0, 17592186044416],  # 2^37, 2^40, 2^44 Only for probabilistic forwardStrategy
+    'networkAwareness': [0.05, 0.1, 0.3, 0.5, 0.8],
+    # 'forwardStrategy': ['default', 'probabilistic'],
+    'forwardStrategy': ['probabilistic', 'distance'],
     'cacheStrategy': ['default'],  # Fixed
 }
 
-NUM_RUNS = 10
+NUM_RUNS = 100
+SIMULATION_TIMEOUT = 60
 
 OUTPUT_DIR = './output'
 PLOT_DIR = './output/plots'
@@ -35,8 +36,8 @@ def ensure_directories():
 
 def is_valid_combination(params: Dict) -> bool:
     """Check if the parameter combination is valid (referenceDistance only for probabilistic)."""
-    # if params['forwardStrategy'] != 'probabilistic' and params['referenceDistance'] != 1e12:
-    #     return False  # Use 1e12 as default for non-probabilistic
+    if params['forwardStrategy'] != 'probabilistic' and params['referenceDistance'] != PARAMS['referenceDistance'][0]:
+        return False
     return True
 
 def run_simulation(params: Dict, run_id: str) -> Tuple[Dict, float]:
@@ -63,19 +64,40 @@ def run_simulation(params: Dict, run_id: str) -> Tuple[Dict, float]:
     # Measure CPU usage
     cpu_usages = []
     try:
+        # Poll process with timeout
+        timeout_occurred = False
         while process.poll() is None:
+            elapsed = time.time() - start_time
+            if elapsed > SIMULATION_TIMEOUT:
+                timeout_occurred = True
+                process.terminate()  # Try graceful termination
+                try:
+                    process.wait(timeout=1)  # Give 1 second to terminate
+                except subprocess.TimeoutExpired:
+                    process.kill()  # Force kill if termination fails
+                break
             try:
                 cpu_percent = ps_process.cpu_percent(interval=0.1)
                 cpu_usages.append(cpu_percent)
             except psutil.NoSuchProcess:
                 break
+            time.sleep(0.1)  # Small sleep to avoid excessive CPU usage
+
+        if timeout_occurred:
+            print(f"Run {run_id} with params {params} timed out after {SIMULATION_TIMEOUT} seconds")
+            return {}, 0.0
+
         stdout, stderr = process.communicate()
         if process.returncode != 0:
             print(f"Error in run {run_id} with params {params}: {stderr}")
             return {}, 0.0
     except Exception as e:
         print(f"Exception in run {run_id}: {e}")
-        process.terminate()
+        try:
+            process.terminate()
+            process.wait(timeout=1)
+        except:
+            process.kill()
         return {}, 0.0
 
     # Calculate average CPU usage
@@ -165,105 +187,125 @@ def plot_results(results: List[Dict]):
     """Generate plots for success rate, messages cached, and CPU usage."""
     ensure_directories()
 
-    # Plot success rate vs. onlineProbability for each forwardStrategy and k
+    # Plot messagesSent vs. onlineProbability for each forwardStrategy
     for k in PARAMS['k']:
-        plt.figure(figsize=(10, 6))
-        for strategy in PARAMS['forwardStrategy']:
-            strategy_results = [
-                r for r in results
-                if r['params']['forwardStrategy'] == strategy
-                and r['params']['k'] == k
-                and r['params']['networkAwareness'] == 0.1  # Fixed
-                and (strategy != 'probabilistic' or r['params']['referenceDistance'] == 1e12)
-            ]
-            if not strategy_results:
-                continue
-            messages_sent = [r['params']['onlineProbability'] for r in strategy_results]
-            success_rates = [r['avg_stats']['successRate'] * 100 for r in strategy_results]
-            success_std = [r['std_stats']['successRate_std'] * 100 for r in strategy_results]
-            plt.errorbar(messages_sent, success_rates, yerr=success_std, label=strategy, marker='o', capsize=5)
-        plt.xlabel('Online Probability')
-        plt.ylabel('Success Rate (%)')
-        plt.title(f'Success Rate vs. Online Probability (k={k}, networkAwareness=0.1)')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(f"{PLOT_DIR}/success_rate_vs_online_probability_k{k}.png")
-        plt.close()
+        for network_awareness in PARAMS['networkAwareness']:
+            for reference_distance in PARAMS['referenceDistance']:
+                plt.figure(figsize=(10, 6))
+                for strategy in PARAMS['forwardStrategy']:
+                    strategy_results = [
+                        r for r in results
+                        if r['params']['forwardStrategy'] == strategy
+                           and r['params']['networkAwareness'] == network_awareness
+                           and r['params']['k'] == k
+                           and (strategy != 'probabilistic' or r['params']['referenceDistance'] == reference_distance)
+                    ]
+                    if not strategy_results:
+                        continue
+                    online_probability = [r['params']['onlineProbability'] for r in strategy_results]
+                    messages_sent = [r['avg_stats']['messagesSent'] for r in strategy_results]
+                    messages_sent_std = [r['std_stats']['messagesSent_std'] for r in strategy_results]
+                    plt.errorbar(online_probability, messages_sent, yerr=messages_sent_std, label=strategy, marker='o',
+                                 capsize=5)
+                plt.xlabel('Online Probability')
+                plt.ylabel('Average Messages Sent')
+                plt.title(
+                    f'Messages Sent vs. Online Probability (k={k}, networkAwareness={network_awareness}, referenceDistance={reference_distance})')
+                plt.legend()
+                plt.grid(True)
+                plt.savefig(
+                    f"{PLOT_DIR}/messages_sent_vs_online_probability_k{k}_networkAwareness{network_awareness}_referenceDistance{reference_distance}.png")
+                plt.close()
 
-    # Plot messages cached vs. onlineProbability for each forwardStrategy and k
+    # Plot messagesSent vs. networkAwareness for each forwardStrategy
     for k in PARAMS['k']:
-        plt.figure(figsize=(10, 6))
-        for strategy in PARAMS['forwardStrategy']:
-            strategy_results = [
-                r for r in results
-                if r['params']['forwardStrategy'] == strategy
-                and r['params']['k'] == k
-                and r['params']['networkAwareness'] == 0.1
-                # and (strategy != 'probabilistic' or r['params']['referenceDistance'] == 1e13)
-            ]
-            if not strategy_results:
-                continue
-            messages_sent = [r['params']['onlineProbability'] for r in strategy_results]
-            messages_cached = [r['avg_stats']['messagesCached'] for r in strategy_results]
-            cached_std = [r['std_stats']['messagesCached_std'] for r in strategy_results]
-            plt.errorbar(messages_sent, messages_cached, yerr=cached_std, label=strategy, marker='o', capsize=5)
-        plt.xlabel('Online Probability')
-        plt.ylabel('Messages Cached')
-        plt.title(f'Messages Cached vs. Online Probability (k={k}, networkAwareness=0.1)')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(f"{PLOT_DIR}/messages_cached_vs_online_probability_k{k}.png")
-        plt.close()
+        for online_probability in PARAMS['onlineProbability']:
+            for reference_distance in PARAMS['referenceDistance']:
+                plt.figure(figsize=(10, 6))
+                for strategy in PARAMS['forwardStrategy']:
+                    strategy_results = [
+                        r for r in results
+                        if r['params']['forwardStrategy'] == strategy
+                           and r['params']['onlineProbability'] == online_probability
+                           and r['params']['k'] == k
+                           and (strategy != 'probabilistic' or r['params']['referenceDistance'] == reference_distance)
+                    ]
+                    if not strategy_results:
+                        continue
+                    network_awareness = [r['params']['networkAwareness'] for r in strategy_results]
+                    messages_sent = [r['avg_stats']['messagesSent'] for r in strategy_results]
+                    messages_sent_std = [r['std_stats']['messagesSent_std'] for r in strategy_results]
+                    plt.errorbar(network_awareness, messages_sent, yerr=messages_sent_std, label=strategy, marker='o',
+                                 capsize=5)
+                plt.xlabel('Network Awareness')
+                plt.ylabel('Average Messages Sent')
+                plt.title(
+                    f'Messages Sent vs. Network Awareness (k={k}, onlineProbability={online_probability}, referenceDistance={reference_distance})')
+                plt.legend()
+                plt.grid(True)
+                plt.savefig(
+                    f"{PLOT_DIR}/messages_sent_vs_network_awareness_k{k}_onlineProbability{online_probability}_referenceDistance{reference_distance}.png")
+                plt.close()
 
-    # Plot CPU usage vs. k for each forwardStrategy
-    plt.figure(figsize=(10, 6))
-    for strategy in PARAMS['forwardStrategy']:
-        strategy_results = [
-            r for r in results
-            if r['params']['forwardStrategy'] == strategy
-            and r['params']['onlineProbability'] == 0.2
-            and r['params']['networkAwareness'] == 0.3
-            # and (strategy != 'probabilistic' or r['params']['referenceDistance'] == 1e12)
-        ]
-        if not strategy_results:
-            continue
-        k_values = [r['params']['forwardStrategy'] for r in strategy_results]
-        cpu_usage = [r['avg_cpu_percent'] for r in strategy_results]
-        plt.plot(k_values, cpu_usage, label=strategy, marker='o')
-    plt.xlabel('Forward Strategy')
-    plt.ylabel('Average CPU Usage (%)')
-    plt.title('CPU Usage vs. K (onlineProbability=0.5, networkAwareness=0.1)')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(f"{PLOT_DIR}/cpu_usage_vs_k.png")
-    plt.close()
-
-    # Plot MessagesSent vs. MessagesCached for each forwardStrategy
-    # Plot messages cached vs. onlineProbability for each forwardStrategy and k
+    # Plot messagesCached vs. onlineProbability for each forwardStrategy
     for k in PARAMS['k']:
-        plt.figure(figsize=(10, 6))
-        for strategy in PARAMS['forwardStrategy']:
-            strategy_results = [
-                r for r in results
-                if r['params']['forwardStrategy'] == strategy
-                   and r['params']['k'] == k
-                   and r['params']['networkAwareness'] == 0.1
-                   # and (strategy != 'probabilistic' or r['params']['referenceDistance'] == 1e14)
-            ]
-            if not strategy_results:
-                continue
-            messages_sent = [r['avg_stats']['messagesSent'] for r in strategy_results]
-            messages_sent_std = [r['std_stats']['messagesSent_std'] for r in strategy_results]
-            messages_cached = [r['avg_stats']['messagesCached'] for r in strategy_results]
-            cached_std = [r['std_stats']['messagesCached_std'] for r in strategy_results]
-            plt.errorbar(messages_sent, messages_cached, yerr=cached_std, xerr=messages_sent_std, label=strategy, marker='o', capsize=5)
-        plt.xlabel('Messages Sent')
-        plt.ylabel('Messages Cached')
-        plt.title(f'Messages Cached vs. Messages Sent (k={k}, networkAwareness=0.1)')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(f"{PLOT_DIR}/messages_cached_vs_messages_sent_k{k}.png")
-        plt.close()
+        for network_awareness in PARAMS['networkAwareness']:
+            for reference_distance in PARAMS['referenceDistance']:
+                plt.figure(figsize=(10, 6))
+                for strategy in PARAMS['forwardStrategy']:
+                    strategy_results = [
+                        r for r in results
+                        if r['params']['forwardStrategy'] == strategy
+                           and r['params']['networkAwareness'] == network_awareness
+                           and r['params']['k'] == k
+                           and (strategy != 'probabilistic' or r['params']['referenceDistance'] == reference_distance)
+                    ]
+                    if not strategy_results:
+                        continue
+                    online_probability = [r['params']['onlineProbability'] for r in strategy_results]
+                    messages_cached = [r['avg_stats']['messagesCached'] for r in strategy_results]
+                    messages_cached_std = [r['std_stats']['messagesCached_std'] for r in strategy_results]
+                    plt.errorbar(online_probability, messages_cached, yerr=messages_cached_std, label=strategy,
+                                 marker='o', capsize=5)
+                plt.xlabel('Online Probability')
+                plt.ylabel('Average Messages Cached')
+                plt.title(
+                    f'Messages Cached vs. Online Probability (k={k}, networkAwareness={network_awareness}, referenceDistance={reference_distance})')
+                plt.legend()
+                plt.grid(True)
+                plt.savefig(
+                    f"{PLOT_DIR}/messages_cached_vs_online_probability_k{k}_networkAwareness{network_awareness}_referenceDistance{reference_distance}.png")
+                plt.close()
+
+    # Plot messagesCached vs. networkAwareness for each forwardStrategy
+    for k in PARAMS['k']:
+        for online_probability in PARAMS['onlineProbability']:
+            for reference_distance in PARAMS['referenceDistance']:
+                plt.figure(figsize=(10, 6))
+                for strategy in PARAMS['forwardStrategy']:
+                    strategy_results = [
+                        r for r in results
+                        if r['params']['forwardStrategy'] == strategy
+                           and r['params']['onlineProbability'] == online_probability
+                           and r['params']['k'] == k
+                           and (strategy != 'probabilistic' or r['params']['referenceDistance'] == reference_distance)
+                    ]
+                    if not strategy_results:
+                        continue
+                    network_awareness = [r['params']['networkAwareness'] for r in strategy_results]
+                    messages_cached = [r['avg_stats']['messagesCached'] for r in strategy_results]
+                    messages_cached_std = [r['std_stats']['messagesCached_std'] for r in strategy_results]
+                    plt.errorbar(network_awareness, messages_cached, yerr=messages_cached_std, label=strategy,
+                                 marker='o', capsize=5)
+                plt.xlabel('Network Awareness')
+                plt.ylabel('Average Messages Cached')
+                plt.title(
+                    f'Messages Cached vs. Network Awareness (k={k}, onlineProbability={online_probability}, referenceDistance={reference_distance})')
+                plt.legend()
+                plt.grid(True)
+                plt.savefig(
+                    f"{PLOT_DIR}/messages_cached_vs_network_awareness_k{k}_onlineProbability{online_probability}_referenceDistance{reference_distance}.png")
+                plt.close()
 
 def main():
     ensure_directories()
