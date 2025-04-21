@@ -18,7 +18,7 @@ PARAMS = {
     'networkAwareness': [0.05, 0.1, 0.3, 0.5, 0.8],
     # 'forwardStrategy': ['default', 'probabilistic'],
     'forwardStrategy': ['probabilistic', 'distance'],
-    'cacheStrategy': ['default'],  # Fixed
+    'cacheStrategy': ['distance'],  # Fixed
 }
 
 NUM_RUNS = 100
@@ -58,11 +58,6 @@ def run_simulation(params: Dict, run_id: str) -> Tuple[Dict, float]:
     # Start the process
     start_time = time.time()
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    pid = process.pid
-    ps_process = psutil.Process(pid)
-
-    # Measure CPU usage
-    cpu_usages = []
     try:
         # Poll process with timeout
         timeout_occurred = False
@@ -75,11 +70,6 @@ def run_simulation(params: Dict, run_id: str) -> Tuple[Dict, float]:
                     process.wait(timeout=1)  # Give 1 second to terminate
                 except subprocess.TimeoutExpired:
                     process.kill()  # Force kill if termination fails
-                break
-            try:
-                cpu_percent = ps_process.cpu_percent(interval=0.1)
-                cpu_usages.append(cpu_percent)
-            except psutil.NoSuchProcess:
                 break
             time.sleep(0.1)  # Small sleep to avoid excessive CPU usage
 
@@ -100,14 +90,12 @@ def run_simulation(params: Dict, run_id: str) -> Tuple[Dict, float]:
             process.kill()
         return {}, 0.0
 
-    # Calculate average CPU usage
-    avg_cpu = np.mean(cpu_usages) if cpu_usages else 0.0
 
     # Read results
     try:
         with open(output_file, 'r') as f:
             result = json.load(f)
-        return result, avg_cpu
+        return result, 0.0
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"Failed to read output {output_file}: {e}")
         return {}, 0.0
