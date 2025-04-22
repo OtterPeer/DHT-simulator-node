@@ -27,6 +27,7 @@ export class DefaultCacheStrategy extends EventEmitter implements CacheStrategy 
       console.log(`Message ${message.id} already cached or no ID; skipping`);
       return;
     }
+    this.emit("nodeProcessesMessage");
     if (!recipienFoundInBuckets) {
       console.log("Recipient is not in my buckets - not caching (DefaultCacheStrategy)");
       return;
@@ -100,7 +101,7 @@ export class LRUCacheStrategy extends EventEmitter implements CacheStrategy {
     }
 
     if (!recipienFoundInBuckets) {
-      console.log("Reciepient is not in my buckets - not caching (LRUCacheStrategy)")
+      console.log("Recipient is not in my buckets - not caching (LRUCacheStrategy)")
       return;
     }
 

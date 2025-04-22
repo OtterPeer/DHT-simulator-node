@@ -80,7 +80,6 @@ export class DistanceBasedForwardStrategy implements ForwardStrategy {
       console.log(`Message ${message.id} already forwarded or no ID; skipping`);
       return;
     }
-    emit("nodeProcessesMessage");
     const selfDistanceToTarget = KBucket.xorDistance(nodeId, recipient);
     const closest = buckets.closest(recipient, k);
 
