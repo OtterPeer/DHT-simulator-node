@@ -3,12 +3,21 @@ import { MockWebRTCRPC } from './mock-webrtc';
 import { v4 as uuid } from 'uuid';
 import { MessageDTO } from './dht';
 import { generateVisualizer } from './visualizer';
+import { DefaultForwardStrategy, DistanceBasedForwardStrategy, ForwardStrategy, ProbabilisticForwardStrategy } from './forward-strategy';
+import * as yargs from 'yargs';
+import { CacheStrategy, DefaultCacheStrategy, DistanceBasedCacheStrategy, DistanceBasedProbabilisticCacheStrategy, LRUCacheStrategy } from './cache-strategy';
+import * as fs from 'fs/promises';
 
 interface SimulatorConfig {
   numNodes: number;
   onlineProbability: number;
   k: number;
-  forwardThreshold: number;
+  referenceDistance: number;
+  cacheStrategyType: string;
+  cacheProbability: number;
+  forwardStrategy: ForwardStrategy;
+  networkAwareness: number;
+  outputFile?: string;
 }
 
 export class Simulator {
@@ -19,13 +28,22 @@ export class Simulator {
   private nodesProcessingMessage: number;
   private messagePath: { from: string; to: string }[];
   private messagesReceived: number;
+  private messagesCached: number;
+  private lastEventTimestamp: number;
+  private checkInterval: NodeJS.Timeout | null;
+  private resolveScenario: (() => void) | null;
+  private scenarioPromise: Promise<void>;
 
   constructor(config: Partial<SimulatorConfig> = {}) {
     this.config = {
       numNodes: config.numNodes || 50,
       onlineProbability: config.onlineProbability || 0.2,
       k: config.k || 20,
-      forwardThreshold: config.forwardThreshold || 1 << 20,
+      referenceDistance: config.referenceDistance || 2 ** 42,
+      forwardStrategy: config.forwardStrategy || new DefaultForwardStrategy(),
+      cacheStrategyType: config.cacheStrategyType || 'default',
+      cacheProbability: config.cacheProbability || 0.5,
+      networkAwareness: config.networkAwareness || 0.1,
     };
     this.nodes = [];
     this.messagesSent = 0;
@@ -33,6 +51,13 @@ export class Simulator {
     this.nodesProcessingMessage = 0;
     this.messagesReceived = 0;
     this.messagePath = [];
+    this.messagesCached = 0;
+    this.resolveScenario = null;
+    this.scenarioPromise = new Promise((resolve) => {
+      this.resolveScenario = resolve;
+    })
+    this.lastEventTimestamp = Date.now();
+    this.checkInterval = null;
   }
 
   async initialize(): Promise<void> {
@@ -40,10 +65,13 @@ export class Simulator {
       const id = uuid().replace(/-/g, '');
       const online = true;
       const mockRpc = new MockWebRTCRPC(this.nodes, this, id);
+      const cacheStrategy = createCacheStrategy(this.config.cacheStrategyType, this.config.cacheProbability);
       const dht = new DHT({
         nodeId: id,
         k: this.config.k,
-        rpc: mockRpc
+        rpc: mockRpc,
+        forwardStrategy: this.config.forwardStrategy,
+        cacheStrategy: cacheStrategy
       });
       this.nodes.push({ id, dht, online });
     }
@@ -51,16 +79,23 @@ export class Simulator {
     for (let i = 0; i < this.nodes.length; i++) {
       if (this.nodes[i].online) {
         for (let j = 0; j < this.nodes.length; j++) {
-          if (Math.random() < 0.3 && this.nodes[i].id !== this.nodes[j].id) { // each node has seen about ~30% of a network
+          if (i !== j && Math.random() < this.config.networkAwareness) { // each node has seen about ~10% of a network
             this.nodes[i].dht.addNode({id: this.nodes[j].id})
           }
         }
       }
     }
 
+    const updateTimestamp = () => {
+      this.lastEventTimestamp = Date.now();
+    };
+
     for (const node of this.nodes) {
       node.online = Math.random() < this.config.onlineProbability;
-      node.dht.on('sent', () => this.messagesSent++);
+      node.dht.on('sent', () => {
+        this.messagesSent++
+        updateTimestamp()
+      });
       node.dht.on('chatMessage', () => {
         this.messagesDelivered++;
       });
@@ -69,6 +104,22 @@ export class Simulator {
         this.messagePath.push({ from: sender, to: recipient });
       });
       node.dht.on('messageReceived', () => this.messagesReceived++)
+      node.dht.on('messageCached', () => this.messagesCached++)
+    }
+
+    this.checkInterval = setInterval(() => this.checkScenarioComplete(), 1000);
+  }
+
+
+  private checkScenarioComplete(): void {
+    if (Date.now() - this.lastEventTimestamp > 1000 && this.resolveScenario) {
+      console.log('No DHT events for 1 second; scenario complete');
+      if (this.checkInterval) {
+        clearInterval(this.checkInterval);
+        this.checkInterval = null;
+      }
+      this.resolveScenario();
+      this.resolveScenario = null;
     }
   }
 
@@ -96,7 +147,7 @@ export class Simulator {
   }
 
   getStatistics(): { messagesSent: number; messagesDelivered: number; successRate: number, nodesProcessingMessage: number,
-    messagesReceived: number
+    messagesReceived: number, messagesCached: number
    } {
     const successRate = this.messagesSent > 0 ? this.messagesDelivered / this.messagesSent : 0;
     return {
@@ -105,6 +156,7 @@ export class Simulator {
       successRate,
       nodesProcessingMessage: this.nodesProcessingMessage,
       messagesReceived: this.messagesReceived,
+      messagesCached: this.messagesCached
     };
   }
 
@@ -112,8 +164,7 @@ export class Simulator {
     const nodes = this.nodes.map(node => ({
       id: node.id,
       label: node.online ? `${node.id.slice(0, 8)} (online)` : `${node.id.slice(0, 8)} (offline)`,
-      color: node.online ? '#90EE90' : '#FF6347',
-      // color: node.dht.cachedMessages.size > 0 ? '#FFFF00' : (node.online ? '#90EE90' : '#FF6347'),
+      color: node.dht.getCachedMessageCount() > 0 ? '#FFFF00' : (node.online ? '#90EE90' : '#FF6347'),
     }));
 
     const edges = this.messagePath.map(path => ({
@@ -136,46 +187,191 @@ export class Simulator {
     if (!dht) return null;
     return dht
   }
+
+  async waitForScenarioComplete(timeoutMs: number = 10000): Promise<void> {
+    try {
+      await Promise.race([
+        this.scenarioPromise,
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`Scenario timed out after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+      console.log('Scenario completed successfully');
+    } catch (error) {
+      console.error('waitForScenarioComplete error:', error);
+      if (this.checkInterval) {
+        clearInterval(this.checkInterval);
+        this.checkInterval = null;
+      }
+      throw error;
+    }
+  }
 }
 
-async function runSimulation() {
-  const simulator = new Simulator({
-    numNodes: 500,
-    onlineProbability: 0.2,
-    k: 20,
-    forwardThreshold: 1 << 20,
-  });
+function createForwardStrategy(name: string, referenceDistance: number): ForwardStrategy {
+  switch (name.toLowerCase()) {
+    case 'default':
+      return new DefaultForwardStrategy();
+    case 'probabilistic':
+      return new ProbabilisticForwardStrategy(referenceDistance);
+    case 'distance':
+      return new DistanceBasedForwardStrategy();
+    default:
+      throw new Error(`Unknown forward strategy: ${name}. Valid options: default, distance, random, probabilistic`);
+  }
+}
 
+function createCacheStrategy(name: string, cacheProbability: number = 0.5): CacheStrategy {
+  switch (name.toLowerCase()) {
+    case 'default':
+      return new DefaultCacheStrategy();
+    case 'lru':
+      return new LRUCacheStrategy(100);
+    case 'distance':
+      return new DistanceBasedCacheStrategy(100, 2 ** 44);
+    case 'distance_probabilistic':
+      return new DistanceBasedProbabilisticCacheStrategy(100, 2 ** 42, cacheProbability);
+    default:
+      throw new Error(`Unknown cache strategy: ${name}. Valid options: default, lru, distance, distance_probabilistic`);
+  }
+}
+
+async function runSimulation(params: {
+  numNodes: number,
+  onlineProbability: number,
+  k: number,
+  networkAwareness: number;
+  referenceDistance: number,
+  forwardStrategy: string,
+  cacheStrategyType: string,
+  cacheProbability: number,
+  outputFile?: string
+}) {
+  const config: SimulatorConfig = {
+    numNodes: params.numNodes,
+    onlineProbability: params.onlineProbability,
+    k: params.k,
+    networkAwareness: params.networkAwareness,
+    referenceDistance: params.referenceDistance,
+    cacheStrategyType: params.cacheStrategyType,
+    cacheProbability: params.cacheProbability,
+    forwardStrategy: createForwardStrategy(params.forwardStrategy, params.referenceDistance),
+    outputFile: params.outputFile,
+  };
+
+  console.log(`Running simulation with: numNodes=${config.numNodes}, onlineProbability=${config.onlineProbability}, k=${config.k}, referenceDistance=${config.referenceDistance}, forwardStrategy=${params.forwardStrategy}, cacheStrategy=${params.cacheStrategyType}`);
+
+  const simulator = new Simulator(config);
   await simulator.initialize();
 
   const onlineNodes = simulator.nodes.filter(n => n.online);
-  if (onlineNodes.length < 2) {
-    console.log('Not enough online nodes to send a message');
-    return;
+
+  const offlineNodes = simulator.nodes.filter(n => !n.online);
+
+  const fromId = onlineNodes[Math.floor(Math.random() * (onlineNodes.length - 1))].id;
+  const toId = offlineNodes[Math.floor(Math.random() * (offlineNodes.length - 1))].id;
+  await simulator.sendMessage(fromId, toId, 'First Message!');
+
+  await simulator.waitForScenarioComplete();
+
+  const stats = simulator.getStatistics();
+  console.log(`Simulation Statistics:`);
+  console.log(`Messages Sent: ${stats.messagesSent}`);
+  console.log(`Messages Received: ${stats.messagesReceived}`);
+  console.log(`Nodes that saw the message: ${stats.nodesProcessingMessage}`);
+  console.log(`Messages Delivered: ${stats.messagesDelivered}`);
+  console.log(`Cached Messages: ${stats.messagesCached}`);
+  console.log(`Success Rate: ${(stats.successRate * 100).toFixed(2)}%`);
+
+  simulator.generateVisualization(fromId, toId);
+  console.log(`Visualization generated at ./output/network_${params.forwardStrategy}_${params.cacheStrategyType}.html`);
+
+  // Prepare result object
+  const result = {
+    params: {
+      numNodes: config.numNodes,
+      onlineProbability: config.onlineProbability,
+      k: config.k,
+      referenceDistance: config.referenceDistance,
+      forwardStrategy: params.forwardStrategy,
+      cacheStrategy: params.cacheStrategyType,
+    },
+    stats,
+    timestamp: new Date().toISOString(),
+  };
+
+  // Write results to output file if specified
+  if (config.outputFile) {
+    await fs.writeFile(config.outputFile, JSON.stringify(result, null, 2));
+    console.log(`Results written to ${config.outputFile}`);
   }
 
-  const fromId = onlineNodes[14].id;
-  const toId = onlineNodes[70].id;
-  await simulator.sendMessage(fromId, toId, 'Hello, Kademlia!');
-
-  function summarize() {
-    const stats = simulator.getStatistics();
-    console.log('Simulation Statistics:');
-    console.log(`Messages Sent: ${stats.messagesSent}`);
-    console.log(`Messages received ${stats.messagesSent}`);
-    console.log(`Nodes that saw the message ${stats.nodesProcessingMessage}`);
-    console.log(`Messages received ${stats.messagesSent}`);
-    console.log(`Nodes that cached the message`);
-    console.log(`Messages Delivered: ${stats.messagesDelivered}`);
-    console.log(`Success Rate: ${(stats.successRate * 100).toFixed(2)}%`);
-
-
-    simulator.generateVisualization(fromId, toId);
-    console.log('Visualization generated at ./output/network.html');
-  }
-
-  setTimeout(summarize, 5000);
-  // summarize();
+  return result;
 }
 
-runSimulation().catch(console.error);
+const argv = yargs
+  .option('numNodes', {
+    type: 'number',
+    description: 'Number of nodes in the simulation',
+    default: 500,
+  })
+  .option('onlineProbability', {
+    type: 'number',
+    description: 'Probability a node is online',
+    default: 0.2,
+  })
+  .option('k', {
+    type: 'number',
+    description: 'Kademlia k parameter (bucket size)',
+    default: 20,
+  })
+  .option('networkAwareness', {
+    type: 'number',
+    description: 'Average fraction of network each node is aware of',
+    default: 0.3,
+  })
+  .option('referenceDistance', {
+    type: 'number',
+    description: 'Reference distance for ProbabilisticForwardStrategy',
+    default: 2 ** 40,
+  })
+  .option('forwardStrategy', {
+    type: 'string',
+    description: 'Forwarding strategy (default, distance, random, probabilistic)',
+    default: 'probabilistic',
+  })
+  .option('cacheStrategy', {
+    type: 'string',
+    description: 'Caching strategy (default, lru, distance, distance-probabilistic)',
+    default: 'default',
+  })
+  .option('cacheProbability', {
+    type: 'number',
+    description: 'Caching probability',
+    default: 0.5,
+  })
+  .option('outputFile', {
+    type: 'string',
+    description: 'Output file for simulation results (JSON)',
+    default: './output/simulation_result.json',
+  })
+  .help()
+  .parseSync();
+
+async function main() {
+  const result = await runSimulation({
+    numNodes: argv.numNodes,
+    onlineProbability: argv.onlineProbability,
+    k: argv.k,
+    networkAwareness: argv.networkAwareness,
+    referenceDistance: argv.referenceDistance,
+    forwardStrategy: argv.forwardStrategy,
+    cacheStrategyType: argv.cacheStrategy,
+    cacheProbability: argv.cacheProbability,
+    outputFile: argv.outputFile,
+  });
+
+  process.exit(0);
+}
+
+main().catch(console.error);

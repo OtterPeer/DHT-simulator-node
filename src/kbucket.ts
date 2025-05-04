@@ -19,7 +19,7 @@ class KBucket {
     // console.log("Adding node " + node.id + " to the DHT");
     if (node.id === this.localId) return; // Don’t add self
     try {
-      const distance = this.xorDistance(this.localId, node.id);
+      const distance = KBucket.xorDistance(this.localId, node.id);
       const bucketIndex = this.bucketIndex(distance);
       const bucket = this.buckets[bucketIndex];
       // console.log("Using bucket " + bucketIndex + ": " + bucket);
@@ -42,7 +42,7 @@ class KBucket {
   public closest(target: string, k: number = this.k): Node[] {
     const distances = this.all().map((node) => ({
       node,
-      distance: this.xorDistance(node.id, target),
+      distance: KBucket.xorDistance(node.id, target),
     }));
     distances.sort((a, b) => a.distance.localeCompare(b.distance)); // Hex string comparison
     return distances.slice(0, k).map((d) => d.node);
@@ -54,7 +54,7 @@ class KBucket {
   }
 
   // Calculate XOR distance as a hex string
-  private xorDistance(id1: string, id2: string): string {
+  public static xorDistance(id1: string, id2: string): string {
     const b1 = Buffer.from(id1, "hex");
     const b2 = Buffer.from(id2, "hex");
     const result = Buffer.alloc(b1.length);
